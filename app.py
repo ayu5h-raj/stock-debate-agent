@@ -1,3 +1,7 @@
+"""Configure logging first"""
+from app_logging import setup_logging
+setup_logging()
+import logging
 import streamlit as st
 from main import StockDebateSystem
 from data_fetcher import get_stock_metrics, get_stock_news, get_stock_symbol
@@ -84,7 +88,6 @@ if st.button("Analyze"):
     try:
         with st.spinner("Looking up stock symbol..."):
             ticker = get_stock_symbol(company, country)
-            print (f"LLM response - step 2: {ticker}")  # Debugging line
             if not ticker:
                 st.error("Could not determine stock symbol")
                 st.stop()
