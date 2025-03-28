@@ -15,13 +15,7 @@ class BullishAgent(StockAgent):
                         "Keep responses under 3 sentences. "
                         "Use natural language as if explaining to a colleague."
         )
-        
-    async def analyze(self, research_data: str, prompt: str) -> str:
-        """Analyze stock research data from bullish perspective"""
-        return await self.generate_response(
-            prompt=f"{prompt}\nAnalyze this stock with a bullish perspective:\n{research_data}",
-            max_tokens=1000
-        )
+        # analyze method removed, context passed directly to debate
 
 class BearishAgent(StockAgent):
     def __init__(self):
@@ -35,10 +29,4 @@ class BearishAgent(StockAgent):
                         "Keep responses under 3 sentences. "
                         "Use natural language as if warning a colleague."
         )
-        
-    async def analyze(self, research_data: str, prompt: str) -> str:
-        """Analyze stock research data from bearish perspective"""
-        return await self.generate_response(
-            prompt=f"{prompt}\nAnalyze this stock with a bearish perspective:\n{research_data}",
-            max_tokens=1000
-        )
+        # analyze method removed, context passed directly to debate

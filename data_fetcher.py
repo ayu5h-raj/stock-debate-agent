@@ -1,109 +1,127 @@
 import os
-from tavily import TavilyClient
 import yfinance as yf
-from typing import Dict, Any
-import json
+from typing import Dict, Any, Optional
+import logging
+from openai import OpenAI
+from dotenv import load_dotenv
+
+load_dotenv()
 
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-tavily = TavilyClient(api_key=TAVILY_API_KEY)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+def get_stock_symbol(company_name: str, country: str = "") -> Optional[str]:
+    """
+    Use LLM to find the stock symbol for a company name
+    Returns format like "AAPL" or "TATA.NS" for Indian stocks
+    """
+    if not client or not OPENAI_API_KEY:
+        logging.error("OpenAI client not configured")
+        return None
+
+    prompt = f"""Given the company name "{company_name}" {f"based in {country}" if country else ""}, 
+    return ONLY the most likely stock ticker symbol in the format required by Yahoo Finance.
+    
+    Important Examples:
+    - Apple → AAPL
+    - Bharti Airtel → BHARTIARTL.NS
+    - Tata Motors → TATAMOTORS.NS  
+    - Reliance Industries → RELIANCE.NS
+    
+    Rules:
+    1. For Indian stocks: 
+       - Bharti Airtel → BHARTIARTL.NS
+       - Tata Motors → TATAMOTORS.NS
+       - Always verify exact symbol format
+    2. For US stocks: just the symbol (e.g. AAPL)
+    3. For others: use appropriate exchange suffix
+    4. Return ONLY the symbol, no other text
+    5. If unsure, return BLANK
+    
+    Verify symbol is correct before returning."""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,  # Lower temperature for more deterministic responses
+            max_tokens=10
+        )
+        symbol = response.choices[0].message.content.strip()
+
+        print(f"LLM response - step 1: {symbol}")  # Debugging line
+        
+        # Clean and validate the symbol
+        symbol = symbol.strip().upper()
+        if not symbol or " " in symbol:
+            logging.error(f"Invalid symbol returned: {symbol}")
+            return None
+            
+        return symbol
+    except Exception as e:
+        logging.error(f"LLM symbol lookup error: {str(e)}")
+        return None
 
 def get_stock_metrics(ticker: str) -> Dict[str, Any]:
-    """Fetch key stock metrics using yfinance"""
-    from app_logging import log_tool_use
-    log_tool_use("yfinance", {"ticker": ticker})
-    stock = yf.Ticker(ticker)
-    info = stock.info
-    
-    # Handle cases where data is None
-    def safe_get(key, default='N/A'):
-        val = info.get(key)
-        return default if val is None else val
-
-    return {
-        'current_price': safe_get('currentPrice'),
-        'pe_ratio': safe_get('trailingPE'),
-        'market_cap': safe_get('marketCap'),
-        '52_week_high': safe_get('fiftyTwoWeekHigh'),
-        '52_week_low': safe_get('fiftyTwoWeekLow'),
-        'dividend_yield': safe_get('dividendYield'),
-        'volume': safe_get('volume', 0),
-        'avg_volume': safe_get('averageVolume', 0),
-        'beta': safe_get('beta')
-    }
+    """Fetch key stock metrics with enhanced error handling"""
+    try:
+        # First check if ticker is supported
+        stock = yf.Ticker(ticker)
+        if not stock.info:
+            return {'error': f"Ticker {ticker} not found or not supported by Yahoo Finance"}
+            
+        info = stock.info
+        
+        # Handle Indian stocks differently
+        is_indian = ticker.endswith('.NS') or ticker.endswith('.BO')
+        
+        metrics = {
+            'current_price': info.get('currentPrice', info.get('regularMarketPrice', 'N/A')),
+            'pe_ratio': info.get('trailingPE', info.get('forwardPE', 'N/A')),
+            'market_cap': info.get('marketCap', 'N/A'),
+            '52_week_high': info.get('fiftyTwoWeekHigh', 'N/A'),
+            '52_week_low': info.get('fiftyTwoWeekLow', 'N/A'),
+            'volume': info.get('volume', 'N/A'),
+            'avg_volume': info.get('averageVolume', 'N/A'),
+            'currency': 'INR' if is_indian else info.get('currency', 'USD')
+        }
+        
+        return metrics
+        
+    except Exception as e:
+        logging.error(f"yfinance error for {ticker}: {str(e)}")
+        return {'error': f"Failed to fetch metrics: {str(e)}"}
 
 def get_stock_news(ticker: str) -> Dict[str, Any]:
-    """Search for recent news about the stock using Tavily"""
-    from app_logging import log_tool_use
-    log_tool_use("Tavily News Search", {"ticker": ticker})
+    """Search for recent news about the stock"""
     if not TAVILY_API_KEY:
         return {"error": "Tavily API key not configured"}
         
-    results = tavily.search(
-        query=f"{ticker} stock news",
-        search_depth="basic",
-        include_raw_content=True,
-        max_results=5
-    )
-    
-    return {
-        'news': [{
-            'title': r.get('title'),
-            'url': r.get('url'),
-            'description': r.get('content'),
-            'date': r.get('published_date')
-        } for r in results.get('results', [])]
-    }
-
-def get_executive_changes(ticker: str) -> Dict[str, Any]:
-    """Search for executive changes using Tavily"""
-    if not TAVILY_API_KEY:
-        return {"error": "Tavily API key not configured"}
-        
-    results = tavily.search(
-        query=f"{ticker} CEO OR CTO OR CFO OR CRO joined OR left",
-        search_depth="basic",
-        include_raw_content=True,
-        max_results=3
-    )
-    
-    return {
-        'executive_changes': [{
-            'title': r.get('title'),
-            'url': r.get('url'),
-            'description': r.get('content'),
-            'date': r.get('published_date')
-        } for r in results.get('results', [])]
-    }
-
-def get_stock_research(ticker: str) -> str:
-    """Generate comprehensive research report"""
     try:
-        metrics = get_stock_metrics(ticker)
-        news = get_stock_news(ticker)
-        executives = get_executive_changes(ticker)
+        from tavily import TavilyClient
+        tavily = TavilyClient(api_key=TAVILY_API_KEY)
         
-        report = f"Stock Research for {ticker}\n\n"
-        report += "Key Metrics:\n"
-        report += f"- Current Price: ${metrics.get('current_price', 'N/A')}\n"
-        report += f"- P/E Ratio: {metrics.get('pe_ratio', 'N/A')}\n"
-        report += f"- Market Cap: ${metrics.get('market_cap', 'N/A'):,}\n"
-        report += f"- 52 Week Range: ${metrics.get('52_week_low', 'N/A')} - ${metrics.get('52_week_high', 'N/A')}\n"
-        report += f"- Volume: {metrics.get('volume', 'N/A'):,} (Avg: {metrics.get('avg_volume', 'N/A'):,})\n"
+        results = tavily.search(
+            query=f"{ticker} stock news",
+            search_depth="basic",
+            max_results=5
+        )
         
-        if news.get('news'):
-            report += "\nRecent News:\n"
-            for item in news['news']:
-                report += f"- {item['title']} ({item['date']})\n"
-                report += f"  {item['description']}\n"
-                report += f"  Source: {item['url']}\n\n"
-        
-        if executives.get('executive_changes'):
-            report += "\nExecutive Changes:\n"
-            for change in executives['executive_changes']:
-                report += f"- {change['title']}\n"
-                report += f"  {change['description']}\n"
-                report += f"  Source: {change['url']}\n\n"
-        
-        return report
+        return {
+            'news': [{
+                'title': r.get('title', 'No title'),
+                'url': r.get('url', '#'),
+                'description': r.get('content', 'No description available')
+            } for r in results.get('results', [])]
+        }
     except Exception as e:
-        return f"Error generating research report: {str(e)}"
+        logging.error(f"News search error for {ticker}: {str(e)}")
+        return {'error': f"News unavailable: {str(e)}"}
+
+def get_stock_research(ticker: str) -> Dict[str, Any]:
+    """Get all research data for a stock"""
+    return {
+        'metrics': get_stock_metrics(ticker),
+        'news': get_stock_news(ticker)
+    }

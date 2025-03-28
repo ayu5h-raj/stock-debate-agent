@@ -50,14 +50,27 @@ class AgentSystem:
     def register_agent(self, agent: Agent):
         self.agents.append(agent)
         
-    async def run_debate(self, agents: list, turns: int, topic: str, stream_handler=None) -> Dict[str, Any]:
-        """Simulate a debate between agents with optional streaming"""
+    async def run_debate(self, agents: list, turns: int, topic: str, context: str = "", stream_handler=None) -> Dict[str, Any]:
+        """Simulate a debate between agents with optional streaming and context"""
         messages = []
+        current_topic = topic # Initial topic
+        if context:
+             current_topic += f"\n\nRelevant Context:\n{context}" # Add context for the first turn
+
         for i in range(turns):
             for agent in agents:
+                # Use the potentially updated topic (including context for first turn)
+                # Pass full context only on first turn, subsequent turns use original topic + history
+                current_prompt = current_topic if i == 0 else topic 
+                
+                # Add previous messages as history for context in subsequent turns
+                history = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages])
+                if history and i > 0:
+                    current_prompt += f"\n\nPrevious Discussion:\n{history}"
+
                 if stream_handler:
                     # Stream the response
-                    stream = await agent.generate_response(topic, stream=True)
+                    stream = await agent.generate_response(current_prompt, stream=True)
                     full_response = ""
                     async for chunk in stream:
                         content = chunk.choices[0].delta.content
@@ -85,7 +98,7 @@ class AgentSystem:
         client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         
         conclusion_response = await client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a neutral financial analyst summarizing a debate."},
                 {"role": "user", "content": conclusion_prompt}

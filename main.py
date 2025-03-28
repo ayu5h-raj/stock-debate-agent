@@ -1,4 +1,5 @@
 import asyncio
+import json
 from agents import BullishAgent, BearishAgent
 from custom_agent import AgentSystem
 import os
@@ -16,27 +17,30 @@ class StockDebateSystem:
         self.system.register_agent(self.bullish_agent)
         self.system.register_agent(self.bearish_agent)
     
-    async def analyze_stock(self, ticker: str, stream_handler=None):
-        """Run stock analysis debate between agents"""
-        research_prompt = f"Research the stock {ticker} and prepare arguments"
+    async def analyze_stock(self, ticker: str, research_data: dict = None, stream_handler=None):
+        """Run stock analysis debate between agents using provided research data"""
+        if research_data is None:
+            from data_fetcher import get_stock_research
+            research_data = get_stock_research(ticker)
         
-        # Fetch research data once and share between agents
-        from data_fetcher import get_stock_research
-        research_data = get_stock_research(ticker)
-        
-        # Have agents analyze the same data from different perspectives
+        # Log agent calls
         log_agent_call("Bullish Agent", ticker)
         log_agent_call("Bearish Agent", ticker)
-        await asyncio.gather(
-            self.bullish_agent.analyze(research_data, research_prompt),
-            self.bearish_agent.analyze(research_data, research_prompt)
-        )
         
-        # Conduct debate
+        # Conduct debate, passing research data as context
+        debate_topic = f"Should we buy {ticker} stock? Consider these key metrics and recent news."
+        # Format context nicely for the LLM
+        context_str = f"--- Start Context for {ticker} ---\n"
+        context_str += f"Metrics: {json.dumps(research_data.get('metrics', {}), indent=2)}\n\n"
+        context_str += f"News: {json.dumps(research_data.get('news', {}).get('news', []), indent=2)}\n\n"
+        context_str += f"Executive Changes: {json.dumps(research_data.get('executives', {}).get('executive_changes', []), indent=2)}\n"
+        context_str += f"--- End Context for {ticker} ---"
+
         debate_result = await self.system.run_debate(
             agents=[self.bullish_agent, self.bearish_agent],
             turns=5,
-            topic=f"Should we buy {ticker} stock?",
+            topic=debate_topic,
+            context=context_str, # Pass formatted context
             stream_handler=stream_handler
         )
         
