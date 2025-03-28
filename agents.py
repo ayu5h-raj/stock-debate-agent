@@ -16,12 +16,10 @@ class BullishAgent(StockAgent):
                         "Use natural language as if explaining to a colleague."
         )
         
-    async def research(self, ticker: str, prompt: str) -> str:
-        """Research a stock from bullish perspective"""
-        # In a real implementation, this would call web search APIs
-        research_data = f"Bullish research on {ticker}: Strong growth potential in next quarter"
+    async def analyze(self, research_data: str, prompt: str) -> str:
+        """Analyze stock research data from bullish perspective"""
         return await self.generate_response(
-            prompt=f"{prompt}\n{research_data}",
+            prompt=f"{prompt}\nAnalyze this stock with a bullish perspective:\n{research_data}",
             max_tokens=1000
         )
 
@@ -38,11 +36,9 @@ class BearishAgent(StockAgent):
                         "Use natural language as if warning a colleague."
         )
         
-    async def research(self, ticker: str, prompt: str) -> str:
-        """Research a stock from bearish perspective"""
-        # In a real implementation, this would call web search APIs
-        research_data = f"Bearish research on {ticker}: Potential risks in next quarter"
+    async def analyze(self, research_data: str, prompt: str) -> str:
+        """Analyze stock research data from bearish perspective"""
         return await self.generate_response(
-            prompt=f"{prompt}\n{research_data}",
+            prompt=f"{prompt}\nAnalyze this stock with a bearish perspective:\n{research_data}",
             max_tokens=1000
         )
