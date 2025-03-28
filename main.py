@@ -33,27 +33,44 @@ class StockDebateSystem:
         context_str = f"--- Start Context for {ticker} ---\n"
         context_str += f"Metrics: {json.dumps(research_data.get('metrics', {}), indent=2)}\n\n"
         context_str += f"News: {json.dumps(research_data.get('news', {}).get('news', []), indent=2)}\n\n"
-        context_str += f"Executive Changes: {json.dumps(research_data.get('executives', {}).get('executive_changes', []), indent=2)}\n"
         context_str += f"--- End Context for {ticker} ---"
 
         debate_result = await self.system.run_debate(
             agents=[self.bullish_agent, self.bearish_agent],
             turns=5,
             topic=debate_topic,
-            context=context_str, # Pass formatted context
+            context=context_str,
             stream_handler=stream_handler
         )
         
-        # Generate concise conclusion
+        # Analyze debate and generate recommendation
+        buy_weight = 0
+        sell_weight = 0
+        bullish_points = []
+        bearish_points = []
+        
+        for msg in debate_result['messages']:
+            content = msg['content']
+            if "bullish" in msg['role'].lower():
+                buy_weight += 1
+                bullish_points.append("- " + content.split('.')[0] + ".")
+            elif "bearish" in msg['role'].lower():
+                sell_weight += 1  
+                bearish_points.append("- " + content.split('.')[0] + ".")
+        
+        confidence = abs(buy_weight - sell_weight)/max(len(debate_result['messages']),1)
+        
         conclusion = f"After analyzing {ticker}, our recommendation is to "
-        if len(debate_result['messages']) > 0:
-            last_message = debate_result['messages'][-1]['content']
-            if "buy" in last_message.lower():
-                conclusion += "BUY. The growth potential outweighs the risks."
-            elif "sell" in last_message.lower():
-                conclusion += "SELL. The risks outweigh the potential gains."
-            else:
-                conclusion += "HOLD. The risks and potential are balanced."
+        if buy_weight > sell_weight and confidence > 0.25:
+            conclusion += f"BUY with {int(confidence*100)}% confidence.\n\n"
+            conclusion += "Key bullish points:\n" + "\n".join(bullish_points[-3:])
+        elif sell_weight > buy_weight and confidence > 0.25:
+            conclusion += f"SELL with {int(confidence*100)}% confidence.\n\n"
+            conclusion += "Key bearish points:\n" + "\n".join(bearish_points[-3:])
+        else:
+            conclusion += "HOLD as arguments are balanced.\n\n"
+            conclusion += "Bullish considerations:\n" + "\n".join(bullish_points[:3])
+            conclusion += "\n\nBearish considerations:\n" + "\n".join(bearish_points[:3])
         
         debate_result['conclusion'] = conclusion
         return debate_result

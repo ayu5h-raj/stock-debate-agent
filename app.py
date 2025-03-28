@@ -1,3 +1,7 @@
+"""Configure logging first"""
+from app_logging import setup_logging
+setup_logging()
+import logging
 import streamlit as st
 from main import StockDebateSystem
 from data_fetcher import get_stock_metrics, get_stock_news, get_stock_symbol
