@@ -1,0 +1,24 @@
+Stock Analysis Flow Diagram:
+
+[User Input]
+   |
+   v
+[Streamlit UI] 
+   |
+   v
+[StockDebateSystem]
+   /       \
+  v         v
+[BullishAgent] [BearishAgent]
+  |             |
+  v             v
+[OpenAI API] [OpenAI API]
+  |             |
+  v             v
+[Debate Engine]
+   |
+   v
+[Conclusion Generator]
+   |
+   v
+[Results Display]
