@@ -101,6 +101,8 @@ stock-agent/
 
 ## Example Analysis
 
+![Alt text](./flow_diagram.png?raw=true "Flow Diagram") *[Flow diagram placeholder]*
+
 Here's sample output for analyzing Apple (AAPL):
 
 **Key Metrics**:

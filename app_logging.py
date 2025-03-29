@@ -16,6 +16,10 @@ def setup_logging():
         ]
     )
 
+def log_conversation(agent_name: str, content: str, ticker: str):
+    """Log agent conversations with timestamp"""
+    logging.info(f"[{ticker}] {agent_name}: {content}")
+
 def log_agent_call(agent_name: str, ticker: str):
     """Log when an agent is called"""
     logging.info(f"{agent_name} analyzing {ticker}")
@@ -27,3 +31,10 @@ def log_tool_use(tool_name: str, params: dict):
 def log_conclusion(ticker: str, conclusion: str):
     """Log the final recommendation"""
     logging.info(f"Final recommendation for {ticker}: {conclusion}")
+
+def format_conversation_log(messages: list) -> str:
+    """Format complete conversation for logging"""
+    return "\n".join(
+        f"[{msg['role']}] {msg['content']}" 
+        for msg in messages
+    )

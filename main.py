@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from openai import OpenAI
 from agents import BullishAssistant, BearishAssistant
 import os
@@ -15,60 +16,88 @@ class StockDebateSystem:
         self.bearish_agent = BearishAssistant(self.client)
     
     async def analyze_stock(self, ticker: str, research_data: dict = None, stream_handler=None):
-        """Run stock analysis debate between assistants using Threads"""
+        """Run stock analysis debate between agents using shared thread"""
         if research_data is None:
             from data_fetcher import get_stock_research
             research_data = get_stock_research(ticker)
         
-        # Create thread for this analysis
+        # Log agent calls
+        log_agent_call("Bullish Agent", ticker)
+        log_agent_call("Bearish Agent", ticker)
+        
+        # Create shared thread
         thread = self.client.beta.threads.create()
         
-        # Initialize debate
-        debate_result = {'messages': []}
-        debate_topic = f"Analyze {ticker} stock. Here's the research data: {json.dumps(research_data)}"
-        
-        # Alternate between agents for 5 turns
-        for turn in range(5):
-            agent = self.bullish_agent if turn % 2 == 0 else self.bearish_agent
-            response = await agent.analyze(thread.id, research_data)
-            
-            # Store message in debate result
-            role = "Bullish Analyst" if turn % 2 == 0 else "Bearish Analyst"
-            debate_result['messages'].append({
-                'role': role,
-                'content': response
+        # Post research data to thread
+        self.client.beta.threads.messages.create(
+            thread_id=thread.id,
+            role="user",
+            content=json.dumps({
+                "type": "research_data",
+                "ticker": ticker,
+                "data": research_data
             })
+        )
         
-        # Analyze debate and generate recommendation
-        buy_weight = 0
-        sell_weight = 0
-        bullish_points = []
-        bearish_points = []
+        debate_result = {'messages': [], 'thread_id': thread.id}
         
-        for msg in debate_result['messages']:
-            content = msg['content']
-            if "bullish" in msg['role'].lower():
-                buy_weight += 1
-                bullish_points.append("- " + content.split('.')[0] + ".")
-            elif "bearish" in msg['role'].lower():
-                sell_weight += 1  
-                bearish_points.append("- " + content.split('.')[0] + ".")
+        try:
+            # Conduct 5-round debate alternating between agents
+            for turn in range(10):
+                is_bullish = turn % 2 == 0
+                agent = self.bullish_agent if is_bullish else self.bearish_agent
+                
+                # Prepare opponent's last message if available
+                opponent_last_msg = debate_result['messages'][-1]['content'] if debate_result['messages'] else None
+                
+                # Get agent's response
+                response = await agent.analyze(
+                    thread_id=thread.id,
+                    research_data=research_data,
+                    opponent_last_msg=opponent_last_msg
+                )
+                
+                # Store message
+                role = "Bullish Analyst" if is_bullish else "Bearish Analyst"
+                debate_result['messages'].append({
+                    'role': role,
+                    'content': response
+                })
+        except Exception as e:
+            logging.error(f"Debate execution error: {str(e)}")
+            debate_result['error'] = str(e)
         
-        confidence = abs(buy_weight - sell_weight)/max(len(debate_result['messages']),1)
+        # Use LLM to generate final conclusion based on debate
+        conclusion_prompt = f"""Summarize the following debate about {ticker} stock and provide a final investment recommendation (BUY, SELL, or HOLD) with a brief justification based ONLY on the arguments presented.
         
-        conclusion = f"After analyzing {ticker}, our recommendation is to "
-        if buy_weight > sell_weight and confidence > 0.25:
-            conclusion += f"BUY with {int(confidence*100)}% confidence.\n\n"
-            conclusion += "Key bullish points:\n" + "\n".join(bullish_points[-3:])
-        elif sell_weight > buy_weight and confidence > 0.25:
-            conclusion += f"SELL with {int(confidence*100)}% confidence.\n\n"
-            conclusion += "Key bearish points:\n" + "\n".join(bearish_points[-3:])
-        else:
-            conclusion += "HOLD as arguments are balanced.\n\n"
-            conclusion += "Bullish considerations:\n" + "\n".join(bullish_points[:3])
-            conclusion += "\n\nBearish considerations:\n" + "\n".join(bearish_points[:3])
+        Debate Transcript:
+        {json.dumps(debate_result['messages'], indent=2)}
+        
+        Final Recommendation (BUY/SELL/HOLD) and Justification:"""
+        
+        try:
+            conclusion_response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "You are a neutral financial analyst summarizing a debate."},
+                    {"role": "user", "content": conclusion_prompt}
+                ],
+                temperature=0.5,
+                max_tokens=150
+            )
+            conclusion = conclusion_response.choices[0].message.content
+        except Exception as e:
+            logging.error(f"Conclusion generation error: {str(e)}")
+            conclusion = "Error generating conclusion."
         
         debate_result['conclusion'] = conclusion
+        
+        # Clean up thread after completion
+        try:
+            self.client.beta.threads.delete(thread.id)
+        except Exception as e:
+            logging.error(f"Error deleting thread {thread.id}: {str(e)}")
+            
         return debate_result
 
 if __name__ == "__main__":
