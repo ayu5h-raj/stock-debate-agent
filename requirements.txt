@@ -1,4 +1,4 @@
-openai-agents
+openai>=1.5.0
 openai
 streamlit
 pandas

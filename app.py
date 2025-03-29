@@ -1,134 +1,328 @@
-"""Configure logging first"""
-from app_logging import setup_logging
-setup_logging()
-import logging
 import streamlit as st
-from main import StockDebateSystem
-from data_fetcher import get_stock_metrics, get_stock_news, get_stock_symbol
-import asyncio
-import yfinance as yf
 import os
-import json
-import time
+import threading # Import threading
+from dotenv import load_dotenv
+from main import StockDebateSystem
+import traceback # Import traceback for error logging
+from streamlit.errors import StreamlitAPIException # For catching secrets error
+# Import the function to find symbols
+from data_fetcher import get_stock_symbol 
+from data_fetcher import get_stock_metrics # Import metrics function
+import asyncio # Import asyncio
 
-st.set_page_config(page_title="Stock Analysis AI", layout="wide")
+# Load environment variables FIRST. This loads from .env into os.environ
+load_dotenv()
 
-# Initialize session state
-if 'result' not in st.session_state:
-    st.session_state.result = None
-if 'conversation' not in st.session_state:
-    st.session_state.conversation = []
-if 'metrics' not in st.session_state:
-    st.session_state.metrics = None
-if 'news' not in st.session_state:
-    st.session_state.news = None
+# --- Page Configuration ---
+st.set_page_config(page_title="Stock Analyst Debate", layout="wide")
+st.title("Stock Analyst AI Debate System 📈 vs 📉")
 
-def format_metric(value, ticker, is_currency=True):
-    """Format metrics with proper currency symbol"""
-    if value in ['N/A', None]:
-        return "N/A"
-    try:
-        if isinstance(value, str):
-            value = float(value.replace('$','').replace(',',''))
-        prefix = "₹" if ticker.endswith(('.NS','.BO')) else "$"
-        if is_currency:
-            return f"{prefix}{value:,.2f}"
-        return f"{value:,.2f}"
-    except (ValueError, TypeError):
-        return str(value)
+# --- API Key Management --- 
+st.sidebar.header("API Configuration")
 
-# API Key Inputs
-with st.sidebar:
-    st.header("API Configuration")
-    openai_key = st.text_input("OpenAI API Key", value=os.getenv("OPENAI_API_KEY", ""), type="password")
-    tavily_key = st.text_input("Tavily API Key", value=os.getenv("TAVILY_API_KEY", ""), type="password")
-    
-    st.header("About")
-    st.write("AI agents debate stock investment decisions.")
-    st.warning("Note: Not financial advice.")
+# 1. Get values from sidebar inputs 
+openai_api_key_input = st.sidebar.text_input(
+    "OpenAI API Key", 
+    value="",  # Start empty
+    type="password",
+    help="Enter key to override .env/secrets, or leave blank."
+)
+tavily_api_key_input = st.sidebar.text_input(
+    "Tavily API Key", 
+    value="",  # Start empty
+    type="password",
+    help="Enter key to override .env/secrets, or leave blank."
+)
 
-async def run_analysis(ticker: str):
-    """Run stock analysis and update UI"""
-    if not openai_key or not tavily_key:
-        st.error("Please enter both API keys")
-        return
-        
-    os.environ["OPENAI_API_KEY"] = openai_key
-    os.environ["TAVILY_API_KEY"] = tavily_key
-    
-    # Step 1: Fetch metrics
-    with st.status(f"Fetching metrics for {ticker}..."):
-        st.session_state.metrics = get_stock_metrics(ticker)
-        if st.session_state.metrics.get('error'):
-            st.error("Failed to fetch metrics")
-            return
+# 2. Determine final keys with priority: Input > .env > secrets
+openai_api_key = openai_api_key_input
+tavily_api_key = tavily_api_key_input
+source_feedback = {"openai": "Input", "tavily": "Input"}
 
-    # Step 2: Fetch news
-    with st.status(f"Fetching news for {ticker}..."):
-        st.session_state.news = get_stock_news(ticker)
-        if st.session_state.news.get('error'):
-            st.warning("News unavailable")
+# Check .env (os.environ) if input is empty
+if not openai_api_key:
+    openai_api_key = os.getenv("OPENAI_API_KEY", "")
+    if openai_api_key:
+        source_feedback["openai"] = ".env File"
 
-    # Step 3: Run analysis
-    with st.status(f"Analyzing {ticker}..."):
-        system = StockDebateSystem()
-        result = await system.analyze_stock(ticker)
-        st.session_state.result = result
-        st.session_state.conversation = result['messages']
+if not tavily_api_key:
+    tavily_api_key = os.getenv("TAVILY_API_KEY", "")
+    if tavily_api_key:
+        source_feedback["tavily"] = ".env File"
 
-# UI Layout
-st.title("Stock Analysis AI")
-col1, col2 = st.columns(2)
-with col1:
-    company = st.text_input("Enter company name:", "Apple")
-with col2:
-    country = st.text_input("Country (optional):", "US")
+# Check secrets only if still empty (and secrets are available)
+secrets_available = False
+try:
+    if hasattr(st, 'secrets') and st.secrets and len(st.secrets) > 0:
+         secrets_available = True
+except (AttributeError, StreamlitAPIException):
+    secrets_available = False
 
-if st.button("Analyze"):
-    try:
-        with st.spinner("Looking up stock symbol..."):
-            ticker = get_stock_symbol(company, country)
-            if not ticker:
-                st.error("Could not determine stock symbol")
-                st.stop()
+if secrets_available:
+    if not openai_api_key: 
+        openai_api_key = st.secrets.get("OPENAI_API_KEY", "")
+        if openai_api_key:
+            source_feedback["openai"] = "Secrets"
             
-            st.session_state.ticker = ticker
-            st.success(f"Found symbol: {ticker}")
-        asyncio.run(run_analysis(st.session_state.ticker))
-    except Exception as e:
-        st.error(f"Error during analysis: {str(e)}")
+    if not tavily_api_key: 
+        tavily_api_key = st.secrets.get("TAVILY_API_KEY", "")
+        if tavily_api_key:
+            source_feedback["tavily"] = "Secrets"
 
-if st.session_state.metrics and hasattr(st.session_state, 'ticker'):
-    st.header("Key Metrics")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Current Price", format_metric(st.session_state.metrics.get('current_price'), st.session_state.ticker))
-        st.metric("P/E Ratio", format_metric(st.session_state.metrics.get('pe_ratio'), st.session_state.ticker, False))
-    with col2:
-        st.metric("Market Cap", format_metric(st.session_state.metrics.get('market_cap'), st.session_state.ticker))
-        st.metric("Volume", format_metric(st.session_state.metrics.get('volume', 0), st.session_state.ticker, False))
-    with col3:
-        low = st.session_state.metrics.get('52_week_low')
-        high = st.session_state.metrics.get('52_week_high')
-        range_str = f"{format_metric(low, st.session_state.ticker, False)} - {format_metric(high, st.session_state.ticker, False)}" if low != 'N/A' and high != 'N/A' else 'N/A'
-        st.metric("52 Week Range", range_str)
-        st.metric("Avg Volume", format_metric(st.session_state.metrics.get('avg_volume', 0), st.session_state.ticker, False))
+# Display feedback on key source
+st.sidebar.caption(f"OpenAI Key Source: {source_feedback['openai']}")
+st.sidebar.caption(f"Tavily Key Source: {source_feedback['tavily']}")
 
-if st.session_state.news and st.session_state.news.get('news'):
-    st.header("Recent News")
-    for item in st.session_state.news['news'][:5]:
-        date = item.get('date') or 'Date not available'
-        st.markdown(f"**{item['title']}**")
-        st.caption(f"[Source]({item['url']}) | {date}")
-        with st.expander("Read more"):
-            st.write(item.get('description', 'No description available'))
+if source_feedback["openai"] == "Input" or source_feedback["tavily"] == "Input":
+    st.sidebar.info("Keys entered in sidebar override .env/secrets for this session.")
+elif source_feedback["openai"] == ".env File" or source_feedback["tavily"] == ".env File":
+     st.sidebar.info("Using keys found in local .env file.")
+elif source_feedback["openai"] == "Secrets" or source_feedback["tavily"] == "Secrets":
+     st.sidebar.info("Using keys from Streamlit secrets.")
 
-if st.session_state.result:
-    st.header("Agent Discussion")
-    for msg in st.session_state.conversation:
-        avatar = "🟢" if "Bullish" in msg['role'] else "🔴"
-        with st.chat_message(msg['role'], avatar=avatar):
-            st.write(msg['content'])
 
-    st.header("Final Recommendation")
-    st.info(st.session_state.result['conclusion'])
+# --- System Initialization --- 
+debate_system = None # Default to None
+
+if openai_api_key and tavily_api_key:
+    current_keys_tuple = (openai_api_key, tavily_api_key)
+
+    if 'system_initialized' not in st.session_state:
+        st.session_state.system_initialized = False
+        st.session_state.debate_system = None
+        st.session_state.last_keys_used = None
+
+    if not st.session_state.system_initialized or \
+       st.session_state.last_keys_used != current_keys_tuple:
+
+        st.session_state.system_initialized = False 
+        st.session_state.debate_system = None
+
+        with st.sidebar:
+            with st.spinner("Initializing Debate System..."):
+                try:
+                    st.session_state.debate_system = StockDebateSystem(
+                        openai_api_key=openai_api_key,
+                        tavily_api_key=tavily_api_key
+                    )
+                    st.session_state.system_initialized = True
+                    st.session_state.last_keys_used = current_keys_tuple
+                    st.success("System Initialized!") 
+                except Exception as e:
+                    st.error(f"Initialization failed: {e}")
+                    st.session_state.system_initialized = False
+
+    if st.session_state.get('system_initialized'):
+        debate_system = st.session_state.get('debate_system') 
+
+if not debate_system:
+    st.warning("System not initialized. Please provide valid API keys (Checked: Input > .env > Secrets).")
+    st.stop()
+
+# --- UI Elements --- 
+st.sidebar.header("Stock Analysis")
+
+# Input for Company Name or Symbol
+company_input = st.sidebar.text_input(
+    "Enter Company Name or Ticker Symbol (e.g., Apple, NVDA, Reliance Industries)", 
+    value="Nvidia" # Default example
+)
+find_symbol_button = st.sidebar.button("Find Symbol / Verify")
+
+# Initialize session state for symbols and selected symbol
+if 'found_symbols' not in st.session_state:
+    st.session_state.found_symbols = None
+if 'selected_symbol' not in st.session_state:
+    st.session_state.selected_symbol = None
+
+# --- Symbol Lookup Logic --- 
+if find_symbol_button:
+    st.session_state.found_symbols = None # Reset on new search
+    st.session_state.selected_symbol = None
+    symbol = None 
+    error_message = None
+
+    if not company_input:
+        st.sidebar.warning("Please enter a company name or symbol.")
+    elif not debate_system: # Need system initialized for Tavily key
+         st.sidebar.error("System not initialized. Check API keys.")
+    else:
+        with st.sidebar:
+            with st.spinner(f"Searching symbols for '{company_input}'..."):
+                # Define a target function for the thread
+                def find_symbol_thread():
+                    global symbol, error_message 
+                    try:
+                        # Call the synchronous function
+                        found_symbol = get_stock_symbol(company_input) 
+                        if found_symbol:
+                            symbol = found_symbol
+                        else:
+                            error_message = f"Could not find a valid symbol for '{company_input}'."
+                    except Exception as thread_e:
+                         error_message = f"Error during symbol search thread: {thread_e}"
+                
+                # Create and start the thread
+                thread = threading.Thread(target=find_symbol_thread)
+                thread.start()
+                thread.join() # Wait for the thread to finish
+
+                # Process results after thread completes
+                if symbol:
+                    st.session_state.found_symbols = [{'symbol': symbol, 'name': company_input}] # Store as list for consistency
+                    st.session_state.selected_symbol = symbol
+                    st.success(f"Verified Symbol: {st.session_state.selected_symbol}")
+                elif error_message:
+                    st.error(error_message)
+                    st.session_state.found_symbols = [] # Indicate error
+                else: # Should not happen if logic above is correct, but handle defensively
+                    st.error("An unknown issue occurred during symbol lookup.")
+                    st.session_state.found_symbols = []
+
+# --- Symbol Selection --- 
+# Check if found_symbols is a list (covers successful search and failed search cases)
+if isinstance(st.session_state.found_symbols, list): 
+    if len(st.session_state.found_symbols) > 1:
+         # Format options for selectbox: "Symbol (Name)"
+         symbol_options = {f"{s['symbol']} ({s.get('name', 'N/A')})": s['symbol'] 
+                           for s in st.session_state.found_symbols}
+         
+         selected_display = st.sidebar.selectbox(
+             "Select the correct stock symbol:",
+             options=symbol_options.keys(), 
+             index=0 # Default to first option
+         )
+         # Update selected_symbol based on selection
+         st.session_state.selected_symbol = symbol_options[selected_display]
+         st.sidebar.write(f"Selected: **{st.session_state.selected_symbol}**")
+    
+    # Handle case where search was attempted but nothing found
+    elif len(st.session_state.found_symbols) == 0 and find_symbol_button:
+        st.sidebar.warning("No symbols found from the search.")
+
+# --- Analysis Execution Trigger --- 
+# Only show analyze button if a symbol is selected/verified
+analyze_button = None 
+ticker = None # Define ticker variable outside the if block
+if st.session_state.selected_symbol:
+    ticker = st.session_state.selected_symbol # Assign selected symbol to ticker
+    analyze_button = st.sidebar.button(f"Analyze {ticker}")
+else:
+    st.sidebar.caption("Find/verify a symbol to enable analysis.")
+
+
+# --- Main Display Area --- 
+col1, col2 = st.columns([3, 1])
+
+with col1:
+    st.markdown("#### Analysis & Debate")
+    metrics_container = st.container() # Container for early metrics
+    status_container = st.container()
+    data_container = st.container() 
+    debate_container = st.container() 
+    conclusion_container = st.container()
+
+# --- Analysis Execution Logic --- 
+# Use the 'analyze_button' state and the 'ticker' variable set above
+if analyze_button and ticker: # Check both button press and ticker availability
+    # Check system readiness again
+    if not debate_system:
+         status_container.error("System not initialized. Check API keys.")
+    else:
+        # Clear previous outputs
+        data_container.empty()
+        debate_container.empty()
+        conclusion_container.empty()
+        status_container.empty()
+        metrics_container.empty() # Clear metrics container
+
+        with status_container:
+             st.info(f"Fetching initial data for {ticker}...")
+
+        # Fetch metrics first
+        initial_metrics = get_stock_metrics(ticker)
+
+        if initial_metrics.get('error'):
+            status_container.error(f"Failed to fetch initial metrics: {initial_metrics['error']}")
+        else:
+            # Display key metrics at the top
+            with metrics_container:
+                st.subheader(f"Key Metrics for {ticker}")
+                price = initial_metrics.get('current_price', 'N/A')
+                mcap = initial_metrics.get('market_cap', 'N/A')
+                pe = initial_metrics.get('pe_ratio', 'N/A')
+                currency = initial_metrics.get('currency', '')
+
+                # Format Market Cap nicely
+                if isinstance(mcap, (int, float)):
+                    if mcap >= 1e12:
+                        mcap_display = f"{mcap / 1e12:.2f} T {currency}"
+                    elif mcap >= 1e9:
+                        mcap_display = f"{mcap / 1e9:.2f} B {currency}"
+                    elif mcap >= 1e6:
+                         mcap_display = f"{mcap / 1e6:.2f} M {currency}"
+                    else:
+                        mcap_display = f"{mcap} {currency}"
+                else:
+                    mcap_display = mcap
+
+                col_m1, col_m2, col_m3 = st.columns(3)
+                col_m1.metric("Current Price", f"{price} {currency}")
+                col_m2.metric("Market Cap", mcap_display)
+                col_m3.metric("P/E Ratio", f"{pe}")
+                st.markdown("---") # Separator
+
+            with status_container:
+                 st.info(f"Starting analysis for {ticker}...")
+                 st.write("_(Agents are preparing for the debate...)_")
+
+            try:
+                # Pass fetched metrics to analyze_stock to avoid re-fetching 
+                final_conclusion, fetched_data = asyncio.run(debate_system.analyze_stock(ticker=ticker, initial_metrics=initial_metrics)) 
+
+                # Display full fetched data later in expander (avoid duplication)
+                with data_container:
+                    with st.expander("View Fetched Research Data"):
+                        if fetched_data:
+                            st.subheader("Financial Metrics")
+                            # Filter out metrics already shown at top if needed, or just show all
+                            # Example: Show all fetched metrics for completeness
+                            st.json(fetched_data.get('metrics', {}), expanded=False)
+
+                            st.subheader("News & Events")
+                            # Check if news data and the 'news' list exist before accessing
+                            news_data = fetched_data.get('news', {})
+                            news_list = news_data.get('news', []) if isinstance(news_data, dict) else []
+                            news_content = "\n".join([f"- {n.get('title', 'N/A')}: {n.get('description', 'N/A')}" for n in news_list]) if news_list else "No news found."
+                            st.text_area("News Details", news_content, height=150)
+
+                            # Executive changes might not be fetched in this flow anymore, adjust if needed
+                            # st.subheader("Executive Changes")
+                            # st.text_area("", fetched_data.get('Executive Changes', "No changes found."), height=100)
+                        else:
+                            st.write("No full research data was returned.")
+            
+                # Update status
+                status_container.empty() 
+                status_container.success(f"Analysis for {ticker} complete.")
+
+                # Display conclusion
+                with conclusion_container:
+                    st.markdown("--- ")
+                    st.markdown("#### Final Conclusion")
+                    if isinstance(final_conclusion, str):
+                        st.markdown(final_conclusion)
+                    else:
+                        st.error("Analysis finished, but the final result format was unexpected.")
+            
+            except Exception as e: 
+                status_container.error(f"An application error occurred during analysis: {e}")
+                with debate_container:
+                     st.error("Traceback:")
+                     st.code(traceback.format_exc())
+
+# --- Initial Placeholder --- 
+if not analyze_button and 'debate_container' in locals():
+     with debate_container:
+        # Adjust initial message
+        st.markdown("Enter a company name or symbol, click 'Find Symbol / Verify', select the symbol (if needed), and then click 'Analyze'.")

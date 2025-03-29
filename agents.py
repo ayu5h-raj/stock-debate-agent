@@ -1,128 +1,101 @@
-from openai import OpenAI
-from typing import Optional, Callable
 import os
+from openai import AsyncOpenAI  # Use AsyncOpenAI for compatibility with async Streamlit
+from typing import AsyncGenerator, List, Dict, Optional
 import json
-import time
 
-class StockAssistant:
-    def __init__(self, client: OpenAI, name: str, instructions: str):
+# Base class (optional, but good practice) - Can be simplified if only used here
+class ChatAgent:
+    def __init__(self, client: AsyncOpenAI, system_prompt: str = ""):
         self.client = client
-        self.name = name
+        self.system_prompt = system_prompt
+        self.model = "gpt-4o-mini" # Use gpt-4o-mini
+
+    async def generate_response_stream(
+        self, 
+        conversation_history: List[Dict[str, str]], 
+        research_data_str: Optional[str] = None,
+        opponent_last_msg: Optional[str] = None,
+        max_tokens: Optional[int] = 1024,
+        temperature: float = 0.7
+    ) -> AsyncGenerator[str, None]:
+        """Generates a streaming response using Chat Completions."""
+        messages = [{"role": "system", "content": self.system_prompt}]
         
-        # Check for existing assistant
-        existing = None
-        try:
-            assistants = self.client.beta.assistants.list(limit=100)
-            existing = next((a for a in assistants.data if a.name == name), None)
-        except Exception as e:
-            print(f"Error listing assistants: {str(e)}")
-        
-        if existing:
-            self.assistant = existing
+        # Add research data string if provided
+        if research_data_str:
+            messages.append({"role": "user", "content": f"Current Research Data:\n{research_data_str}"}) 
+
+        # Add existing history
+        messages.extend(conversation_history)
+
+        # Add opponent's last message if provided
+        if opponent_last_msg:
+            messages.append({"role": "user", "content": f"Opponent's Last Argument:\n{opponent_last_msg}"}) 
+
+        # Add final instruction based on whether opponent message exists
+        if opponent_last_msg:
+            messages.append({"role": "user", "content": "Based on the research data and your opponent's last argument, present your concise analysis."})
         else:
-            self.assistant = self.client.beta.assistants.create(
-                name=name,
-                instructions=instructions,
-                tools=[{"type": "function", "function": {
-                    "name": "get_stock_research",
-                    "description": "Get research data for a stock",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "ticker": {"type": "string", "description": "Stock ticker symbol"}
-                        },
-                        "required": ["ticker"]
-                    }
-                }}],
-                model="gpt-4o"
-            )
+             messages.append({"role": "user", "content": "Based on the research data, present your concise opening analysis."})
 
-    async def analyze(self, thread_id: str, research_data: dict, 
-                     opponent_last_msg: str = None, 
-                     stream_handler: Optional[Callable] = None) -> str:
-        """Run analysis using streaming API with opponent context"""
+        # Log the number of messages being sent
+        print(f"[{self.__class__.__name__}] Sending {len(messages)} messages to API.")
+
         try:
-            # Prepare optimized message
-            message = {
-                "meta": {
-                    "ticker": research_data.get('ticker', ''),
-                    "agent_type": self.name,
-                    "round": research_data.get('round', 0)
-                },
-                "research": {
-                    "metrics": research_data.get('metrics', {}),
-                    "news": research_data.get('news', [])
-                },
-                "opponent_argument": opponent_last_msg
-            }
-
-            # Post message to thread
-            self.client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=json.dumps(message, separators=(',', ':'))
+            stream = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stream=True,
             )
-
-            # Start streaming run with timeout
-            full_response = ""
-            try:
-                with self.client.beta.threads.runs.stream(
-                    thread_id=thread_id,
-                    assistant_id=self.assistant.id,
-                    timeout=30  # 30 second timeout
-                ) as stream:
-                    for event in stream:
-                        if event.event == 'thread.message.delta':
-                            content = event.data.delta.content[0].text.value
-                            full_response += content
-                            if stream_handler:
-                                stream_handler(content)
-                        elif event.event == 'thread.run.failed':
-                            raise Exception(f"Run failed: {event.data.last_error}")
-                            
-                    return full_response
-
-            except Exception as e:
-                # Cancel any stuck run before re-raising
-                try:
-                    self.client.beta.threads.runs.cancel(
-                        thread_id=thread_id,
-                        run_id=stream.run.id
-                    )
-                except Exception:
-                    pass
-                raise
-
+            async for chunk in stream:
+                content = chunk.choices[0].delta.content
+                if content is not None:
+                    yield content
         except Exception as e:
-            print(f"Error in {self.name} analysis: {str(e)}")
-            return ""
+            error_message = f"Error during generation for {self.__class__.__name__}: {str(e)}"
+            print(error_message)
+            # Yield a user-friendly error message in the stream
+            yield f"\n\n[Analysis failed: {str(e)}]\n"
 
-class BullishAssistant(StockAssistant):
-    def __init__(self, client: OpenAI):
-        instructions = """You are a bullish stock analyst specializing in identifying:
-- Strong fundamentals (P/E ratios, revenue growth, profit margins)  
-- Competitive advantages (moats, market position, patents)
-- Growth catalysts (new markets, products, partnerships)
-- Potential risks (but emphasize why they're manageable)
 
-Structure responses clearly with:
-1. Investment thesis summary
-2. Key quantitative metrics  
-3. Qualitative strengths
-4. Risk assessment"""
-        super().__init__(client, "Bullish Analyst", instructions)
+class BullishChatAgent(ChatAgent):
+    def __init__(self, client: AsyncOpenAI):
+        system_prompt = """You are a bullish stock analyst. Your goal is to present a strong investment thesis for the given stock.
+Focus on:
+- Strong fundamentals (P/E ratios, revenue growth, profit margins). Cite specific data points from the research provided.
+- Competitive advantages (moats, market position, patents).
+- Growth catalysts (new markets, products, partnerships).
+- Address potential risks but emphasize why they are manageable or outweighed by the positives.
 
-class BearishAssistant(StockAssistant):
-    def __init__(self, client: OpenAI):
-        instructions = """You are a bearish stock analyst specializing in identifying:
-- Overvaluation metrics (P/E vs sector, PEG ratio)  
-- Deteriorating fundamentals (declining margins, slowing growth)  
-- Competitive threats (market share loss, disruption risks)
-- Management/execution risks  
+Structure your response clearly:
+1.  **Investment Thesis:** Summarize why this stock is a buy.
+2.  **Quantitative Strength:** Highlight key positive metrics from the research.
+3.  **Qualitative Edge:** Describe the company's non-numerical advantages.
+4.  **Risk Mitigation:** Acknowledge risks and explain why the outlook remains bullish.
 
-Structure responses clearly with:
-1. Risk thesis summary  
-2. Warning metrics  
-3. Competitive threats  
-4. Bull case rebuttal"""
-        super().__init__(client, "Bearish Analyst", instructions)
+Respond directly to the user prompt and incorporate the provided research data. If an opponent's argument is provided, address it constructively within your bullish framework.
+
+**IMPORTANT: Be concise. Focus on the 1-2 most impactful points for this turn of the debate.**"""
+        super().__init__(client, system_prompt=system_prompt)
+
+class BearishChatAgent(ChatAgent):
+    def __init__(self, client: AsyncOpenAI):
+        system_prompt = """You are a bearish stock analyst. Your goal is to present a strong case against investing in the given stock.
+Focus on:
+- Overvaluation metrics (high P/E vs sector, PEG ratio). Cite specific data points from the research provided.
+- Deteriorating fundamentals (declining margins, slowing growth).
+- Competitive threats (market share loss, disruption risks).
+- Management/execution risks or red flags.
+
+Structure your response clearly:
+1.  **Risk Thesis:** Summarize why this stock is a sell or hold-at-best.
+2.  **Quantitative Weakness:** Highlight key negative metrics or concerning trends from the research.
+3.  **Competitive & Market Threats:** Describe external factors posing a risk.
+4.  **Bull Case Rebuttal:** If an opponent's argument is provided, directly challenge its points using your bearish perspective and the data.
+
+Respond directly to the user prompt and incorporate the provided research data. Emphasize the risks and downsides.
+
+**IMPORTANT: Be concise. Focus on the 1-2 most impactful points for this turn of the debate.**"""
+        super().__init__(client, system_prompt=system_prompt)

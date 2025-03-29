@@ -17,7 +17,7 @@ class Agent:
         """Generate response using OpenAI API"""
         from openai import AsyncOpenAI
         
-        client = AsyncOpenAI(api_key=self.api_key)
+        client = AsyncOpenAI(api_key=self.api_key, api_version="2023-03-15")
         
         if stream:
             response = await client.chat.completions.create(
@@ -83,7 +83,7 @@ class AgentSystem:
                     })
                 else:
                     # Non-streaming response
-                    response = await agent.generate_response(topic)
+                    response = await agent.generate_response(current_prompt)
                     messages.append({
                         'role': agent.name,
                         'content': response
@@ -95,7 +95,7 @@ class AgentSystem:
             
         # Use a neutral system prompt for the conclusion
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), api_version="2023-03-15")
         
         conclusion_response = await client.chat.completions.create(
             model="gpt-4o-mini",
