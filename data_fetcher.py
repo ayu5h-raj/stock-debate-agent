@@ -50,8 +50,6 @@ def get_stock_symbol(company_name: str, country: str = "") -> Optional[str]:
         )
         symbol = response.choices[0].message.content.strip()
 
-        print(f"LLM response - step 1: {symbol}")  # Debugging line
-        
         # Clean and validate the symbol
         symbol = symbol.strip().upper()
         if not symbol or " " in symbol:

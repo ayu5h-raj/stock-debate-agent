@@ -88,7 +88,6 @@ if st.button("Analyze"):
     try:
         with st.spinner("Looking up stock symbol..."):
             ticker = get_stock_symbol(company, country)
-            print (f"LLM response - step 2: {ticker}")  # Debugging line
             if not ticker:
                 st.error("Could not determine stock symbol")
                 st.stop()
